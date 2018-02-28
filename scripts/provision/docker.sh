@@ -48,7 +48,7 @@
 # ---------------------------------------------------------------------------
 
 NAME=hyperledger/fabric-baseimage
-RELEASE=`uname -m`-$1
+RELEASE=latest
 DOCKERHUB_NAME=$NAME:$RELEASE
 
 CURDIR=`dirname $0`

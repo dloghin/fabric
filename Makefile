@@ -216,6 +216,7 @@ build/image/ccenv/.dummy: build/image/src/.dummy build/image/ccenv/bin/protoc-ge
 build/image/javaenv/.dummy: Makefile $(JAVASHIM_DEPS)
 	@echo "Building docker javaenv-image"
 	@mkdir -p $(@D)
+	@/bin/bash images/javaenv/prepare.sh
 	@cat images/javaenv/Dockerfile.in > $(@D)/Dockerfile
 	@git ls-files core/chaincode/shim/java | tar -jcT - > $(@D)/javashimsrc.tar.bz2
 	@git ls-files protos core/chaincode/shim/table.proto settings.gradle  | tar -jcT - > $(@D)/protos.tar.bz2
