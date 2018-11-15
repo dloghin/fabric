@@ -55,11 +55,11 @@ repositories {
 protobuf {
     generatedFilesBaseDir = "$projectDir/src"
     protoc {
-        artifact = 'com.google.protobuf:protoc:3.0.0-beta-2'
+	path = '/usr/bin/protoc.exe'
     }
     plugins {
         grpc {
-            artifact = 'io.grpc:protoc-gen-grpc-java:0.13.2'
+	    path = '/usr/bin/protoc-gen-grpc-java.exe'
         }
     }
     generateProtoTasks {

@@ -33,7 +33,7 @@ func newDataKey(chaincodeID string, key string) *dataKey {
 	compositeKey := statemgmt.ConstructCompositeKey(chaincodeID, key)
 	bucketHash := conf.computeBucketHash(compositeKey)
 	// Adding one because - we start bucket-numbers 1 onwards
-	bucketNumber := int(bucketHash)%conf.getNumBucketsAtLowestLevel() + 1
+	bucketNumber := int(bucketHash % uint32(conf.getNumBucketsAtLowestLevel()) + 1)
 	dataKey := &dataKey{newBucketKeyAtLowestLevel(bucketNumber), compositeKey}
 	logger.Debugf("Exit - newDataKey=[%s]", dataKey)
 	return dataKey

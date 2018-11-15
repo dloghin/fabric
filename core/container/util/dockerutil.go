@@ -45,6 +45,7 @@ func NewDockerClient() (client *docker.Client, err error) {
 // and GOARCH here.
 var archRemap = map[string]string{
 	"amd64": "x86_64",
+	"arm": "armv7l",
 }
 
 func getArch() string {

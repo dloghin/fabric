@@ -212,7 +212,7 @@ peer:
         touchMaxNodes: 100
 
     # Path on the file system where peer will store data
-    fileSystemPath: /var/hyperledger/production
+    fileSystemPath: /tmp/hyperledger/production
     # rocksdb configurations
     db:
         maxLogFileSize: 10485760
@@ -263,7 +263,7 @@ vm:
                 Config:
                     max-size: "50m"
                     max-file: "5"
-            Memory: 2147483648
+            Memory: 134217728
 ###############################################################################
 #
 #    Chaincode section
