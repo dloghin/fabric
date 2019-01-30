@@ -32,6 +32,8 @@ import (
 
 	"github.com/hyperledger/fabric/protos"
 	"golang.org/x/net/context"
+	
+	"runtime/debug"
 )
 
 var ledgerLogger = logging.MustGetLogger("ledger")
@@ -207,6 +209,8 @@ func (ledger *Ledger) CommitTxBatch(id interface{}, transactions []*protos.Trans
 
 	//send chaincode events from transaction results
 	sendChaincodeEvents(transactionResults)
+	
+	debug.FreeOSMemory();
 
 	if len(transactionResults) != 0 {
 		ledgerLogger.Debug("There were some erroneous transactions. We need to send a 'TX rejected' message here.")
