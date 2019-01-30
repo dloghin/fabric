@@ -526,7 +526,7 @@ func (chaincodeSupport *ChaincodeSupport) Launch(context context.Context, t *pb.
 		//send init (if (args)) and wait for ready state
 		err = chaincodeSupport.sendInitOrReady(context, t.Txid, chaincode, initargs, chaincodeSupport.ccStartupTimeout, t, depTx)
 		if err != nil {
-			chaincodeLogger.Errorf("sending init failed(%s)", err)
+			chaincodeLogger.Errorf("sending init failed(%s) - timeout %d", err, chaincodeSupport.ccStartupTimeout)
 			err = fmt.Errorf("Failed to init chaincode(%s)", err)
 			errIgnore := chaincodeSupport.Stop(context, cds)
 			if errIgnore != nil {

@@ -196,7 +196,7 @@ func ListColumnFamilies(opts *Options, name string) ([]string, error) {
 	}
 	namesLen := int(cLen)
 	names := make([]string, namesLen)
-	cNamesArr := (*[1 << 28]*C.char)(unsafe.Pointer(cNames))[:namesLen:namesLen]
+	cNamesArr := (*[1 << 20]*C.char)(unsafe.Pointer(cNames))[:namesLen:namesLen]
 	for i, n := range cNamesArr {
 		names[i] = C.GoString(n)
 	}

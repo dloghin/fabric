@@ -77,7 +77,7 @@ func Execute(ctxt context.Context, chain *ChaincodeSupport, t *pb.Transaction) (
 		}
 
 		// TODO: Need to comment next line and uncomment call to getTimeout, when transaction blocks are being created
-		timeout := time.Duration(30000) * time.Millisecond
+		timeout := time.Duration(3000000) * time.Millisecond
 		//timeout, err := getTimeout(cID)
 
 		if err != nil {
