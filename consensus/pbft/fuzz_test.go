@@ -134,8 +134,14 @@ func TestMinimalFuzz(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping fuzz test")
 	}
+  
+  var validatorCount int
+  if !loadConfig().GetBool("general.sgx") {
+	  validatorCount = 4
+  } else {
+    validatorCount = 3
+  }
 
-	validatorCount := 4
 	net := makePBFTNetwork(validatorCount, nil)
 	defer net.stop()
 	fuzzer := &protoFuzzer{r: rand.New(rand.NewSource(0))}

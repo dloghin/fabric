@@ -20,32 +20,120 @@ import (
 	"encoding/base64"
 	"fmt"
 	"reflect"
-
+  "strconv"
 	"github.com/hyperledger/fabric/consensus/util/events"
 )
 
 // viewChangeQuorumEvent is returned to the event loop when a new ViewChange message is received which is part of a quorum cert
 type viewChangeQuorumEvent struct{}
 
+type wantViewChangeQuorumEvent struct{}
+
 func (instance *pbftCore) correctViewChange(vc *ViewChange) bool {
 	for _, p := range append(vc.Pset, vc.Qset...) {
-		if !(p.View < vc.View && p.SequenceNumber > vc.H && p.SequenceNumber <= vc.H+instance.L) {
+		if !(p.View < vc.View && p.SeqNo > vc.H && p.SeqNo <= vc.H+instance.L) {
 			logger.Debugf("Replica %d invalid p entry in view-change: vc(v:%d h:%d) p(v:%d n:%d)",
-				instance.id, vc.View, vc.H, p.View, p.SequenceNumber)
+				instance.id, vc.View, vc.H, p.View, p.SeqNo)
 			return false
 		}
+
+    // verify prepare and commit attestation
+    for _, att := range p.Prepare {
+      if ok, _:= instance.a2m.VerifyAttestation(att.Attestation); ok==0 {
+        logger.Infof("Replica %d failed to verify attestation for p.Prepare during view change from %d to %d", instance.id, vc.OldView, vc.View)
+        return false
+      }
+    }
+    for _, att := range p.Commit {
+      if ok, _:= instance.a2m.VerifyAttestation(att.Attestation); ok==0 {
+        logger.Infof("Replica %d failed to verify attestation for p.Commit during view change from %d to %d", instance.id, vc.OldView, vc.View)
+        return false
+      }
+    }
+
+    // verify H and A
+    checkH, _ := instance.a2m.VerifyAttestation(p.H)
+    checkA, _ := instance.a2m.VerifyAttestation(p.A)
+    if checkH==0 || checkA==0 {
+      logger.Infof("Replica %d failed to verify attestation for H and A during view change from %d to %d", instance.id, vc.OldView, vc.View)
+      return false
+    }
 	}
+
+  // check that any seqNo in Q but not in P
+  pSeqs := make(map[uint64]bool)
+  for _, p := range vc.Pset {
+    pSeqs[p.SeqNo] = true
+  }
+  
+  for _, q := range vc.Qset {
+    if _, ok := pSeqs[q.SeqNo]; !ok {
+      logger.Infof("Replica %d failed to verify Pset and Qset overlapping, during view change from %d to %d", instance.id, vc.OldView, vc.View)
+      return false
+    }
+  }
 
 	for _, c := range vc.Cset {
 		// PBFT: the paper says c.n > vc.h
-		if !(c.SequenceNumber >= vc.H && c.SequenceNumber <= vc.H+instance.L) {
+		if !(c.Checkpoint.SequenceNumber >= vc.H && c.Checkpoint.SequenceNumber <= vc.H+instance.L) {
 			logger.Debugf("Replica %d invalid c entry in view-change: vc(v:%d h:%d) c(n:%d)",
-				instance.id, vc.View, vc.H, c.SequenceNumber)
+				instance.id, vc.View, vc.H, c.Checkpoint.SequenceNumber)
 			return false
 		}
 	}
 
+  // verify B set
+  for _, b := range vc.Bset {
+    if !(b.View >= vc.OldView && b.View <= vc.View) {
+      logger.Infof("Replica %d failed to verify B set: b.View %d not from the expected range [%d, %d]",   instance.id, b.View, vc.OldView, vc.View)
+      return false
+    }
+    if ok, _ := instance.a2m.VerifySkippedAttestation(b.Attestation); ok==0 {
+      logger.Infof("Replica %d failed to verify attestation for B set during view change from %d to %d", instance.id, vc.OldView, vc.View)
+      return false
+    }
+  }
+
 	return true
+}
+
+func (instance *pbftCore) calcBSet() error {
+  // find max seqNo in pset and qset
+  max := uint64(0)
+  for idx := range instance.pset {
+    if max > idx {
+      max = idx
+    }
+  }
+  for idx := range instance.qset {
+    if max > idx {
+      max = idx
+    }
+  }
+
+  for v := range instance.bset {
+    cert := instance.bset[v]
+    cert.Attestation, _ = instance.a2m.Lookup("commit", int(v*instance.a2mL+max+1))
+  }
+ return nil
+}
+
+// update P.A
+func (instance *pbftCore) updatePSet(seqNo uint64, attestation []byte) {
+  if p, ok := instance.pset[seqNo]; !ok {
+    return
+  } else {
+    p.A = attestation
+  }
+}
+
+// update Q.H
+func (instance *pbftCore) updateQSet(seqNo uint64, attestation []byte) {
+  if q, ok := instance.qset[seqNo]; !ok {
+    return
+  } else {
+    q.H = attestation
+  }
 }
 
 func (instance *pbftCore) calcPSet() map[uint64]*ViewChange_PQ {
@@ -74,25 +162,32 @@ func (instance *pbftCore) calcPSet() map[uint64]*ViewChange_PQ {
 			continue
 		}
 
+    var prepareCerts []*Prepare
+    for _, p := range cert.prepare {
+      if p.View == idx.v && p.SequenceNumber == idx.n {
+        prepareCerts = append(prepareCerts, p)
+      }
+    }
+
 		pset[idx.n] = &ViewChange_PQ{
-			SequenceNumber: idx.n,
-			BatchDigest:    digest,
-			View:           idx.v,
+      SeqNo:  idx.n,
+			Prepare: prepareCerts,
+      BatchDigest: digest,
+      View: idx.v,
 		}
 	}
 
 	return pset
 }
 
-func (instance *pbftCore) calcQSet() map[qidx]*ViewChange_PQ {
-	qset := make(map[qidx]*ViewChange_PQ)
+func (instance *pbftCore) calcQSet() map[uint64]*ViewChange_PQ {
+	qset := make(map[uint64]*ViewChange_PQ)
 
 	for n, q := range instance.qset {
 		qset[n] = q
 	}
 
-	// Q set: requests that have pre-prepared here (pre-prepare or
-	// prepare sent)
+	// Q set: committed certificates
 	//
 	// "<n,d,v>: requests that pre-prepared here, and did not
 	// pre-prepare in a later view with the same number"
@@ -103,34 +198,69 @@ func (instance *pbftCore) calcQSet() map[qidx]*ViewChange_PQ {
 		}
 
 		digest := cert.digest
-		if !instance.prePrepared(digest, idx.v, idx.n) {
+		if !instance.committed(digest, idx.v, idx.n) {
 			continue
 		}
 
-		qi := qidx{digest, idx.n}
-		if q, ok := qset[qi]; ok && q.View > idx.v {
+		if q, ok := qset[idx.n]; ok && q.View > idx.v {
 			continue
 		}
 
-		qset[qi] = &ViewChange_PQ{
-			SequenceNumber: idx.n,
-			BatchDigest:    digest,
-			View:           idx.v,
+    var commitCerts []*Commit
+    for _, c := range cert.commit {
+      if c.View == idx.v && c.SequenceNumber == idx.n {
+        commitCerts = append(commitCerts, c)
+      }
+    }
+
+    // have a q
+		qset[idx.n] = &ViewChange_PQ{
+      SeqNo:  idx.n, 
+			Commit: commitCerts,
+      BatchDigest: digest,
+      View: idx.v,
 		}
 	}
 
 	return qset
 }
 
+func (instance *pbftCore) sendWantViewChange() events.Event {
+	wvc := &WantViewChange{
+		View:      instance.view+1,
+		Nonce:     make([]byte, 32),
+		Id:        instance.id,
+	}
+
+  // no need to sign
+	// instance.sign(vc)
+
+	logger.Infof("Replica %d sending want-view-change, v:%d", instance.id, wvc.View)
+
+	instance.innerBroadcast(&Message{Payload: &Message_WantViewChange{WantViewChange: wvc}})
+
+	instance.wvcResendTimer.Reset(instance.wvcResendTimeout, wantViewChangeResendTimerEvent{})
+
+	return instance.recvWantViewChange(wvc)
+}
+
 func (instance *pbftCore) sendViewChange() events.Event {
 	instance.stopTimer()
+  if _, ok := instance.statUtil.Stats["viewchange"]; !ok {
+    instance.statUtil.Stats["viewchange"].Start(strconv.FormatUint(instance.id, 10))
+  }
 
 	delete(instance.newViewStore, instance.view)
+  if instance.activeView {
+    instance.oldView = instance.view  // first view change
+  }
+
 	instance.view++
 	instance.activeView = false
 
 	instance.pset = instance.calcPSet()
 	instance.qset = instance.calcQSet()
+  instance.calcBSet()
 
 	// clear old messages
 	for idx := range instance.certStore {
@@ -146,26 +276,41 @@ func (instance *pbftCore) sendViewChange() events.Event {
 
 	vc := &ViewChange{
 		View:      instance.view,
+    OldView:  instance.oldView,
 		H:         instance.h,
 		ReplicaId: instance.id,
 	}
 
-	for n, id := range instance.chkpts {
-		vc.Cset = append(vc.Cset, &ViewChange_C{
-			SequenceNumber: n,
-			Id:             id,
-		})
-	}
+  // Wset
+  // delete right afterward is safe
+  for idx := range instance.wset {
+    vc.Wset = append(vc.Wset, idx)
+    delete(instance.wset, idx)
+  }
+
+  // Bset
+  for idx := range instance.bset {
+    vc.Bset = append(vc.Bset, instance.bset[idx])
+  }
+
+  // checkpoint set
+  for testChkpt := range instance.checkpointStore {
+    if testChkpt.SequenceNumber == instance.h {
+      vc.Cset = append(vc.Cset, &ViewChange_C {
+                                  Checkpoint: &testChkpt,
+                                  })
+    }
+  }
 
 	for _, p := range instance.pset {
-		if p.SequenceNumber < instance.h {
+		if p.SeqNo < instance.h {
 			logger.Errorf("BUG! Replica %d should not have anything in our pset less than h, found %+v", instance.id, p)
 		}
 		vc.Pset = append(vc.Pset, p)
 	}
 
 	for _, q := range instance.qset {
-		if q.SequenceNumber < instance.h {
+		if q.SeqNo < instance.h {
 			logger.Errorf("BUG! Replica %d should not have anything in our qset less than h, found %+v", instance.id, q)
 		}
 		vc.Qset = append(vc.Qset, q)
@@ -173,19 +318,86 @@ func (instance *pbftCore) sendViewChange() events.Event {
 
 	instance.sign(vc)
 
-	logger.Infof("Replica %d sending view-change, v:%d, h:%d, |C|:%d, |P|:%d, |Q|:%d",
-		instance.id, vc.View, vc.H, len(vc.Cset), len(vc.Pset), len(vc.Qset))
+	logger.Infof("Replica %d sending view-change, old_view: %d, v:%d, h:%d, |C|:%d, |P|:%d, |Q|:%d",
+		instance.id, vc.OldView, vc.View, vc.H, len(vc.Cset), len(vc.Pset), len(vc.Qset))
+
+  // log to a2m
+  att, _ := instance.a2m.Advance("viewchange", int(vc.View*instance.a2mL + vc.H), make([]byte, 32), []byte("0"))
+  vc.Attestation = att
 
 	instance.innerBroadcast(&Message{Payload: &Message_ViewChange{ViewChange: vc}})
 
 	instance.vcResendTimer.Reset(instance.vcResendTimeout, viewChangeResendTimerEvent{})
 
-	return instance.recvViewChange(vc)
+ 	return instance.recvViewChange(vc)
+}
+
+func (instance *pbftCore) recvWantViewChange(wvc *WantViewChange) events.Event {
+  logger.Infof("Replica %d received Want-View-Change from replica %d for view %d", instance.id, wvc.Id,
+  wvc.View)
+
+  // ignore if wanted view change is smaller than current view
+  if wvc.View < instance.view {
+    return nil
+  }
+
+  // delete old want-view-change from the replica
+  if v, ok := instance.wvcIndex[wvc.Id]; ok && v < wvc.View {
+    delete(instance.wantVCStore, vcidx{wvc.View, wvc.Id})
+  }
+
+  // add to the want-view-change store
+  instance.wantVCStore[vcidx{wvc.View, wvc.Id}] = wvc
+  instance.wvcIndex[wvc.Id] = wvc.View
+
+  // pick a view that has >= f+1 want-view-change messages
+  replicas := make(map[uint64][]bool)
+  view2Change := uint64(0)
+  for idx := range instance.wantVCStore {
+    if idx.v <= instance.view {
+      continue
+    }
+    replicas[idx.v] = append(replicas[idx.v], true)
+    if len(replicas[idx.v]) >= (instance.f) {
+      view2Change = idx.v
+      break
+    }
+  }
+
+  // got a quorum of Want-View-Change
+  if view2Change >0 {
+
+    // make wset
+    for idx := range instance.wantVCStore {
+      if idx.v == view2Change {
+        instance.wset[instance.wantVCStore[idx]] = true
+      }
+    }
+
+    if len(instance.wset) < instance.intersectionQuorum()-1 {
+      return nil
+    }
+
+    // abandon from current view to view2Change
+    // add to Bset
+    for vt := instance.view; vt < view2Change; vt++ {
+      abandon_att, _ := instance.a2m.Advance("commit", int((vt+1)*instance.a2mL-1), make([]byte, 32), []byte("0"))
+      instance.bset[vt] = &ViewChange_Att{View: vt, Attestation: abandon_att}
+    }
+    // stop resend timer
+    instance.wvcResendTimer.Stop()
+    instance.view = view2Change - 1 // because sendViewChange increments it
+    instance.sendViewChange()
+  }
+  return nil
 }
 
 func (instance *pbftCore) recvViewChange(vc *ViewChange) events.Event {
 	logger.Infof("Replica %d received view-change from replica %d, v:%d, h:%d, |C|:%d, |P|:%d, |Q|:%d",
 		instance.id, vc.ReplicaId, vc.View, vc.H, len(vc.Cset), len(vc.Pset), len(vc.Qset))
+  if _, ok := instance.statUtil.Stats["viewchange"]; !ok {
+    instance.statUtil.Stats["viewchange"].Start(strconv.FormatUint(instance.id, 10))
+  }
 
 	if err := instance.verify(vc); err != nil {
 		logger.Warningf("Replica %d found incorrect signature in view-change message: %s", instance.id, err)
@@ -228,7 +440,7 @@ func (instance *pbftCore) recvViewChange(vc *ViewChange) events.Event {
 	}
 
 	// We only enter this if there are enough view change messages _greater_ than our current view
-	if len(replicas) >= instance.f+1 {
+	if  len(replicas) >= instance.f {
 		logger.Infof("Replica %d received f+1 view-change messages, triggering view-change to view %d",
 			instance.id, minView)
 		// subtract one, because sendViewChange() increments
@@ -269,7 +481,7 @@ func (instance *pbftCore) sendNewView() events.Event {
 		return nil
 	}
 
-	msgList := instance.assignSequenceNumbers(vset, cp.SequenceNumber)
+	msgList := instance.assignSequenceNumbers(vset, cp.Checkpoint.SequenceNumber)
 	if msgList == nil {
 		logger.Infof("Replica %d could not assign sequence numbers for new view", instance.id)
 		return nil
@@ -281,6 +493,9 @@ func (instance *pbftCore) sendNewView() events.Event {
 		Xset:      msgList,
 		ReplicaId: instance.id,
 	}
+
+  att, _ := instance.a2m.Advance("newview", int(instance.view*instance.a2mL), make([]byte, 32), []byte("0"))
+  nv.Attestation = att
 
 	logger.Infof("Replica %d is new primary, sending new-view, v:%d, X:%+v",
 		instance.id, nv.View, nv.Xset)
@@ -339,10 +554,10 @@ func (instance *pbftCore) processNewView() events.Event {
 
 	// If we have not reached the sequence number, check to see if we can reach it without state transfer
 	// In general, executions are better than state transfer
-	if speculativeLastExec < cp.SequenceNumber {
+	if speculativeLastExec < cp.Checkpoint.SequenceNumber {
 		canExecuteToTarget := true
 	outer:
-		for seqNo := speculativeLastExec + 1; seqNo <= cp.SequenceNumber; seqNo++ {
+		for seqNo := speculativeLastExec + 1; seqNo <= cp.Checkpoint.SequenceNumber; seqNo++ {
 			found := false
 			for idx, cert := range instance.certStore {
 				if idx.n != seqNo {
@@ -375,14 +590,14 @@ func (instance *pbftCore) processNewView() events.Event {
 		}
 
 		if canExecuteToTarget {
-			logger.Debugf("Replica %d needs to process a new view, but can execute to the checkpoint seqNo %d, delaying processing of new view", instance.id, cp.SequenceNumber)
+			logger.Debugf("Replica %d needs to process a new view, but can execute to the checkpoint seqNo %d, delaying processing of new view", instance.id, cp.Checkpoint.SequenceNumber)
 			return nil
 		}
 
-		logger.Infof("Replica %d cannot execute to the view change checkpoint with seqNo %d", instance.id, cp.SequenceNumber)
+		logger.Infof("Replica %d cannot execute to the view change checkpoint with seqNo %d", instance.id,  cp.Checkpoint.SequenceNumber)
 	}
 
-	msgList := instance.assignSequenceNumbers(nv.Vset, cp.SequenceNumber)
+	msgList := instance.assignSequenceNumbers(nv.Vset, cp.Checkpoint.SequenceNumber)
 	if msgList == nil {
 		logger.Warningf("Replica %d could not assign sequence numbers: %+v",
 			instance.id, instance.viewChangeStore)
@@ -395,23 +610,23 @@ func (instance *pbftCore) processNewView() events.Event {
 		return instance.sendViewChange()
 	}
 
-	if instance.h < cp.SequenceNumber {
-		instance.moveWatermarks(cp.SequenceNumber)
+	if instance.h < cp.Checkpoint.SequenceNumber {
+		instance.moveWatermarks(cp.Checkpoint.SequenceNumber)
 	}
 
-	if speculativeLastExec < cp.SequenceNumber {
-		logger.Warningf("Replica %d missing base checkpoint %d (%s), our most recent execution %d", instance.id, cp.SequenceNumber, cp.Id, speculativeLastExec)
+	if speculativeLastExec < cp.Checkpoint.SequenceNumber {
+		logger.Warningf("Replica %d missing base checkpoint %d (%s), our most recent execution %d", instance.id,  cp.Checkpoint.SequenceNumber, cp.Checkpoint.Id, speculativeLastExec)
 
-		snapshotID, err := base64.StdEncoding.DecodeString(cp.Id)
+		snapshotID, err := base64.StdEncoding.DecodeString(cp.Checkpoint.Id)
 		if nil != err {
-			err = fmt.Errorf("Replica %d received a view change whose hash could not be decoded (%s)", instance.id, cp.Id)
+			err = fmt.Errorf("Replica %d received a view change whose hash could not be decoded (%s)", instance.id, cp.Checkpoint.Id)
 			logger.Error(err.Error())
 			return nil
 		}
 
 		target := &stateUpdateTarget{
 			checkpointMessage: checkpointMessage{
-				seqNo: cp.SequenceNumber,
+				seqNo: cp.Checkpoint.SequenceNumber,
 				id:    snapshotID,
 			},
 			replicas: replicas,
@@ -461,6 +676,11 @@ func (instance *pbftCore) processNewView2(nv *NewView) events.Event {
 	instance.nullRequestTimer.Stop()
 
 	instance.activeView = true
+  // clear Bset
+  for bidx := range instance.bset {
+    delete(instance.bset, bidx)
+  }
+
 	delete(instance.newViewStore, instance.view-1)
 
 	instance.seqNo = instance.h
@@ -480,13 +700,15 @@ func (instance *pbftCore) processNewView2(nv *NewView) events.Event {
 			RequestBatch:   reqBatch,
 			ReplicaId:      instance.id,
 		}
+    att, _ := instance.a2m.Advance("prep", int(instance.view*instance.a2mL+n), make([]byte, 32), []byte("0"))
+    preprep.Attestation = att
+
 		cert := instance.getCert(instance.view, n)
 		cert.prePrepare = preprep
 		cert.digest = d
 		if n > instance.seqNo {
 			instance.seqNo = n
 		}
-		instance.persistQSet()
 	}
 
 	instance.updateViewChangeSeqNo()
@@ -499,6 +721,8 @@ func (instance *pbftCore) processNewView2(nv *NewView) events.Event {
 				BatchDigest:    d,
 				ReplicaId:      instance.id,
 			}
+      att, _ := instance.a2m.Advance("prepare", int(instance.view*instance.a2mL+n), make([]byte, 32), []byte("0"))
+      prep.Attestation = att
 			if n > instance.h {
 				cert := instance.getCert(instance.view, n)
 				cert.sentPrepare = true
@@ -507,13 +731,18 @@ func (instance *pbftCore) processNewView2(nv *NewView) events.Event {
 			instance.innerBroadcast(&Message{Payload: &Message_Prepare{Prepare: prep}})
 		}
 	} else {
-		logger.Debugf("Replica %d is now primary, attempting to resubmit requests", instance.id)
+		logger.Infof("Replica %d is now primary, attempting to resubmit requests", instance.id)
 		instance.resubmitRequestBatches()
 	}
 
 	instance.startTimerIfOutstandingRequests()
 
-	logger.Debugf("Replica %d done cleaning view change artifacts, calling into consumer", instance.id)
+	logger.Infof("Replica %d done cleaning view change artifacts, calling into consumer", instance.id)
+  if lt, ok := instance.statUtil.Stats["viewchange"].End(strconv.FormatUint(instance.id, 10)); ok {
+      logger.Infof("Viewchange latency (before viewChangedEvent): %v", lt)
+  } else {
+      logger.Infof("Error printing out viewchange latency (before viewChangedEvent)")
+  }
 
 	return viewChangedEvent{}
 }
@@ -526,7 +755,26 @@ func (instance *pbftCore) getViewChanges() (vset []*ViewChange) {
 	return
 }
 
+// for a2m, select one that has highest seqNo
 func (instance *pbftCore) selectInitialCheckpoint(vset []*ViewChange) (checkpoint ViewChange_C, ok bool, replicas []uint64) {
+  maxSeq := uint64(0)
+  vcIdx := 0
+  for idx, vc := range vset {
+    for _, c := range vc.Cset {
+      if c.Checkpoint.SequenceNumber >= maxSeq {
+        checkpoint = *c
+        maxSeq = c.Checkpoint.SequenceNumber
+        vcIdx = idx
+      }
+    }
+  }
+  ok = true
+  for _, c := range vset[vcIdx].Cset {
+     replicas = append(replicas, c.Checkpoint.ReplicaId)
+  }
+  return
+
+  /*
 	checkpoints := make(map[ViewChange_C][]*ViewChange)
 	for _, vc := range vset {
 		for _, c := range vc.Cset { // TODO, verify that we strip duplicate checkpoints from this set
@@ -543,7 +791,7 @@ func (instance *pbftCore) selectInitialCheckpoint(vset []*ViewChange) (checkpoin
 
 	for idx, vcList := range checkpoints {
 		// need weak certificate for the checkpoint
-		if len(vcList) <= instance.f { // type casting necessary to match types
+		if (!instance.sgx && len(vcList) <= instance.f)  { // type casting necessary to match types
 			logger.Debugf("Replica %d has no weak certificate for n:%d, vcList was %d long",
 				instance.id, idx.SequenceNumber, len(vcList))
 			continue
@@ -576,13 +824,36 @@ func (instance *pbftCore) selectInitialCheckpoint(vset []*ViewChange) (checkpoin
 	}
 
 	return
+  */
 }
 
+// for a2m, get the highest sequence number H in P and Q
+// for all h < n <= H, if there's a certificate, add to the list
+// if no cert, add Null request to the list
 func (instance *pbftCore) assignSequenceNumbers(vset []*ViewChange, h uint64) (msgList map[uint64]string) {
 	msgList = make(map[uint64]string)
 
 	maxN := h + 1
+  digestMap := make(map[uint64]string)
+  for _, v := range vset {
+    for _, p := range(append(v.Pset, v.Qset...)) {
+      digestMap[p.SeqNo] = p.BatchDigest
+        if p.SeqNo > maxN {
+          maxN = p.SeqNo
+        }
+    }
+  }
 
+  // populate msgList
+  for n := h+1; n <= maxN; n++ {
+    msgList[n] = ""
+    if d, ok := digestMap[n]; ok {
+      msgList[n] = d
+    }
+  }
+
+  return
+/*
 	// "for all n such that h < n <= h + L"
 nLoop:
 	for n := h + 1; n <= h+instance.L; n++ {
@@ -649,7 +920,6 @@ nLoop:
 		if quorum >= instance.intersectionQuorum() {
 			// "then select the null request for number n"
 			msgList[n] = ""
-
 			continue nLoop
 		}
 
@@ -665,4 +935,5 @@ nLoop:
 	}
 
 	return
+*/
 }

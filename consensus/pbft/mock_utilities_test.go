@@ -57,6 +57,10 @@ type mockPersist struct {
 	store map[string][]byte
 }
 
+func is_sgx_on() bool {
+  return loadConfig().GetBool("general.sgx")
+}
+
 func (p *mockPersist) initialize() {
 	if p.store == nil {
 		p.store = make(map[string][]byte)

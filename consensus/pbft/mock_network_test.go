@@ -274,7 +274,7 @@ func (net *testnet) processContinually() {
 
 func makeTestnet(N int, initFn func(id uint64, network *testnet) endpoint) *testnet {
 	net := &testnet{}
-	net.msgs = make(chan taggedMsg, 100)
+	net.msgs = make(chan taggedMsg, 1000)
 	net.closed = make(chan struct{})
 	net.endpoints = make([]endpoint, N)
 

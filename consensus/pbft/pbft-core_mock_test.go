@@ -154,7 +154,12 @@ func makePBFTNetwork(N int, config *viper.Viper) *pbftNetwork {
 	}
 
 	config.Set("general.N", N)
-	config.Set("general.f", (N-1)/3)
+  if !is_sgx_on() {
+	  config.Set("general.f", (N-1)/3)
+  } else {
+    config.Set("general.f", (N-1)/2)
+  }
+
 	endpointFunc := func(id uint64, net *testnet) endpoint {
 		tep := makeTestEndpoint(id, net)
 		pe := &pbftEndpoint{

@@ -45,6 +45,7 @@ type ConsensusHandler struct {
 	peer.MessageHandler
 	consenterChan chan *util.Message
 	coordinator   peer.MessageHandlerCoordinator
+	requestQueueSize int
 }
 
 // NewConsensusHandler constructs a new MessageHandler for the plugin.
@@ -64,6 +65,7 @@ func NewConsensusHandler(coord peer.MessageHandlerCoordinator,
 
 	consensusQueueSize := viper.GetInt("peer.validator.consensus.buffersize")
 
+	handler.requestQueueSize = consensusQueueSize*1 / 4
 	if consensusQueueSize <= 0 {
 		logger.Errorf("peer.validator.consensus.buffersize is set to %d, but this must be a positive integer, defaulting to %d", consensusQueueSize, DefaultConsensusQueueSize)
 		consensusQueueSize = DefaultConsensusQueueSize
@@ -77,19 +79,21 @@ func NewConsensusHandler(coord peer.MessageHandlerCoordinator,
 
 // HandleMessage handles the incoming Fabric messages for the Peer
 func (handler *ConsensusHandler) HandleMessage(msg *pb.Message) error {
-	if msg.Type == pb.Message_CONSENSUS {
+	senderId, _ := handler.To()
+	logger.Debugf("Handling message of type %v from %v", msg.Type, senderId)
+	if msg.Type == pb.Message_CONSENSUS || msg.Type == pb.Message_CONSENSUS_REQUEST {
 		senderPE, _ := handler.To()
 		select {
-		case handler.consenterChan <- &util.Message{
-			Msg:    msg,
-			Sender: senderPE.ID,
-		}:
-			return nil
-		default:
-			err := fmt.Errorf("Message channel for %v full, rejecting", senderPE.ID)
-			logger.Errorf("Failed to queue consensus message because: %v", err)
+			case handler.consenterChan <- &util.Message{
+			  Msg:    msg,
+			  Sender: senderPE.ID,
+			}:
+		    	return nil
+			default:
+        			err := fmt.Errorf("Message channel for %v full, rejecting", senderPE.ID)
+			  		logger.Errorf("Failed to queue consensus message because: %v", err)
 			return err
-		}
+    		}
 	}
 
 	if logger.IsEnabledFor(logging.DEBUG) {

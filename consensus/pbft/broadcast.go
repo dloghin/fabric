@@ -46,7 +46,7 @@ type sendRequest struct {
 }
 
 func newBroadcaster(self uint64, N int, f int, broadcastTimeout time.Duration, c communicator) *broadcaster {
-	queueSize := 10 // XXX increase after testing
+	queueSize := 1000 // XXX increase after testing
 
 	chans := make(map[uint64]chan *sendRequest)
 	b := &broadcaster{

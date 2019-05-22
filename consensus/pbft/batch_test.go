@@ -40,6 +40,9 @@ func obcBatchHelper(id uint64, config *viper.Viper, stack consensus.Stack) pbftC
 func TestNetworkBatch(t *testing.T) {
 	batchSize := 2
 	validatorCount := 4
+ 	if is_sgx_on() {
+		validatorCount = 3
+	}
 	net := makeConsumerNetwork(validatorCount, obcBatchHelper, func(ce *consumerEndpoint) {
 		ce.consumer.(*obcBatch).batchSize = batchSize
 	})
@@ -288,6 +291,9 @@ func obcBatchSizeOneHelper(id uint64, config *viper.Viper, stack consensus.Stack
 
 func TestClassicStateTransfer(t *testing.T) {
 	validatorCount := 4
+	if is_sgx_on() {
+		validatorCount = 3
+	}
 	net := makeConsumerNetwork(validatorCount, obcBatchSizeOneHelper, func(ce *consumerEndpoint) {
 		ce.consumer.(*obcBatch).pbft.K = 2
 		ce.consumer.(*obcBatch).pbft.L = 4
@@ -297,7 +303,8 @@ func TestClassicStateTransfer(t *testing.T) {
 
 	filterMsg := true
 	net.filterFn = func(src int, dst int, msg []byte) []byte {
-		if filterMsg && dst == 3 { // 3 is byz
+		if (!is_sgx_on() && filterMsg && dst == 3) || 
+      (is_sgx_on() && filterMsg && dst == 2) { // 3 is byz
 			return nil
 		}
 		return msg
@@ -331,6 +338,9 @@ func TestClassicStateTransfer(t *testing.T) {
 
 func TestClassicBackToBackStateTransfer(t *testing.T) {
 	validatorCount := 4
+ 	if is_sgx_on() {
+ 		validatorCount = 3
+ 	}
 	net := makeConsumerNetwork(validatorCount, obcBatchSizeOneHelper, func(ce *consumerEndpoint) {
 		ce.consumer.(*obcBatch).pbft.K = 2
 		ce.consumer.(*obcBatch).pbft.L = 4
@@ -341,7 +351,8 @@ func TestClassicBackToBackStateTransfer(t *testing.T) {
 
 	filterMsg := true
 	net.filterFn = func(src int, dst int, msg []byte) []byte {
-		if filterMsg && dst == 3 { // 3 is byz
+		if (!is_sgx_on() && filterMsg && dst == 3) || 
+      (is_sgx_on() && filterMsg && dst == 2) { // 3 is byz
 			return nil
 		}
 		return msg

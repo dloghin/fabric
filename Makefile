@@ -37,8 +37,8 @@
 #   - dist-clean - superset of 'clean' that also removes persistent state
 
 PROJECT_NAME   = hyperledger/fabric
-BASE_VERSION   = 0.6.2-preview
-IS_RELEASE     = false
+BASE_VERSION   = 0.6.2-sharding
+IS_RELEASE     = true
 
 ifneq ($(IS_RELEASE),true)
 EXTRA_VERSION ?= snapshot-$(shell git rev-parse --short HEAD)
@@ -126,7 +126,6 @@ linter: gotools
 	@echo "Building $@"
 	@mkdir -p $(@D)
 	@docker run -i \
-		--user=$(UID) \
 		-v $(abspath vendor/github.com/golang/protobuf):/opt/gopath/src/github.com/golang/protobuf \
 		-v $(abspath $(@D)):/opt/gopath/bin \
 		hyperledger/fabric-baseimage go install github.com/golang/protobuf/protoc-gen-go
@@ -153,7 +152,6 @@ build/docker/bin/%: build/image/src/.dummy $(PROJECT_FILES)
 	@echo "Building $@"
 	@mkdir -p build/docker/bin build/docker/pkg
 	@docker run -i \
-		--user=$(UID) \
 		-v $(abspath build/docker/bin):/opt/gopath/bin \
 		-v $(abspath build/docker/pkg):/opt/gopath/pkg \
 		hyperledger/fabric-src:$(DOCKER_TAG) go install -ldflags "$(GO_LDFLAGS)" github.com/hyperledger/fabric/$(TARGET)
