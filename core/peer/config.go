@@ -43,6 +43,9 @@ var localAddressError error
 var peerEndpoint *pb.PeerEndpoint
 var peerEndpointError error
 
+var shardId uint32
+var shardsCount uint32
+
 // Cached values of commonly used configuration constants.
 
 // CacheConfiguration computes and caches commonly-used constants and
@@ -87,9 +90,16 @@ func CacheConfiguration() (err error) {
 		}
 		return &pb.PeerEndpoint{Id: &pb.PeerID{Name: viper.GetString("peer.id")}, Address: peerAddress}, nil
 	}
+	
+	getShard := func() (uint32, uint32) {
+		return uint32(viper.GetInt("peer.shards")), uint32(viper.GetInt("peer.shard.id"))
+	}
 
 	localAddress, localAddressError = getLocalAddress()
 	peerEndpoint, _ = getPeerEndpoint()
+	shardsCount, shardId = getShard()
+	
+	peerLogger.Info("Peer is in shard", shardId, "out of", shardsCount)
 
 	configurationCached = true
 
@@ -228,4 +238,20 @@ func GetClientCertificate() (tls.Certificate, error) {
 			"error parsing client TLS key pair")
 	}
 	return cert, nil
+}
+
+// Get the number of shards
+func GetShardsCount() (uint32, error) {
+	if !configurationCached {
+		cacheConfiguration()
+	}
+	return shardsCount, nil
+}
+
+// Get the number of shards
+func GetShardId() (uint32, error) {
+	if !configurationCached {
+		cacheConfiguration()
+	}
+	return shardId, nil
 }

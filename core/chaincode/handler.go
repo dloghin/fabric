@@ -29,6 +29,7 @@ import (
 	"github.com/hyperledger/fabric/protos/common"
 	pb "github.com/hyperledger/fabric/protos/peer"
 	"github.com/pkg/errors"
+	"github.com/hyperledger/fabric/core/shard"
 )
 
 var chaincodeLogger = flogging.MustGetLogger("chaincode")
@@ -1015,6 +1016,10 @@ func (h *Handler) HandlePutState(msg *pb.ChaincodeMessage, txContext *Transactio
 		return nil, errors.Wrap(err, "unmarshal failed")
 	}
 
+	if !shard.GetShardMatch(putState.Key) {
+		return nil, errors.New("this peer is not handling this key")
+	}
+	
 	chaincodeName := h.ChaincodeName()
 	collection := putState.Collection
 	if isCollectionSet(collection) {
